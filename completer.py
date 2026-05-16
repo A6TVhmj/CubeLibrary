@@ -1,10 +1,10 @@
 import time
-import kb_lite
+import cl_core
 
-CORNER_FACELETS = kb_lite.CORNER_FACELETS
-EDGE_FACELETS = kb_lite.EDGE_FACELETS
-STD_CORNERS = kb_lite.STD_CORNERS
-STD_EDGES = kb_lite.STD_EDGES
+CORNER_FACELETS = cl_core.CORNER_FACELETS
+EDGE_FACELETS = cl_core.EDGE_FACELETS
+STD_CORNERS = cl_core.STD_CORNERS
+STD_EDGES = cl_core.STD_EDGES
 
 def _match_piece(target, piece):
     for t, p in zip(target, piece):
@@ -40,10 +40,10 @@ def generate_valid_completes(pseudo_str, stop_flag):
         if stop_flag(): return
         if slot == 12:
             if sum(curr_eo) % 2 == 0:
-                ep_parity = kb_lite.get_perm(curr_ep) % 2
+                ep_parity = cl_core.get_perm(curr_ep) % 2
                 for cp, co in valid_corners:
                     if stop_flag(): return
-                    if kb_lite.get_perm(cp) % 2 == ep_parity:
+                    if cl_core.get_perm(cp) % 2 == ep_parity:
                         yield build_full_string(cp, co, curr_ep, curr_eo)
             return
 
@@ -68,26 +68,21 @@ def build_full_string(cp, co, ep, eo):
     return "".join(facelets)
 
 def solve_incomplete_stream(state_string, queue, stop_flag, search_mode):
-    kb_lite.init_engine()
+    cl_core.init_engine()
     generator = generate_valid_completes(state_string, stop_flag)
     count = 0
-    # 为了防止刷屏太快，记录已经输出过的解
     seen_sols = set()
     
     try:
         for comp_state in generator:
             if stop_flag(): break
-            
-            # 🌟 把 UI 传来的 mode 交给引擎，返回的必定是 List
-            sols = kb_lite.solve(comp_state, mode=search_mode, max_depth=22, stop_flag=stop_flag)
-            
-            for sol in sols:
-                if sol not in seen_sols:
+            for sol in cl_core.solve(comp_state, mode=search_mode, max_depth=20, stop_flag=stop_flag):
+                if stop_flag(): break
+                if sol not in seen_sols and sol != "":
                     seen_sols.add(sol)
                     count += 1
                     queue.put((count, comp_state, sol, len(sol.split())))
             
-            time.sleep(0.001) 
     except Exception as e:
         queue.put(("ERROR", str(e)))
         
