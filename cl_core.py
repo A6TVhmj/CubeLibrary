@@ -1,10 +1,12 @@
-import time
+import os
 import math
+import threading
 import numpy as np
 
 # ==============================================================
-# Kociemba's Engine (Two-Phase & Optimal + Numba Accelerated)
+# CubeLibrary Core Engine (Pure Python + Native Types Optimization)
 # ==============================================================
+_INIT_LOCK = threading.Lock()
 MOVES_STR = ["U", "U2", "U'", "R", "R2", "R'", "F", "F2", "F'", "D", "D2", "D'", "L", "L2", "L'", "B", "B2", "B'"]
 P2_MOVES  = [0, 1, 2, 9, 10, 11, 4, 13, 7, 16] 
 
@@ -28,7 +30,6 @@ for n in range(13):
 
 def multiply_cubies(c1, c2):
     return ([c1[0][c2[0][i]] for i in range(8)], [(c1[1][c2[0][i]] + c2[1][i]) % 3 for i in range(8)], [c1[2][c2[2][i]] for i in range(12)], [(c1[3][c2[2][i]] + c2[3][i]) % 2 for i in range(12)])
-
 def get_twist(co): return sum(co[i] * (3 ** (6 - i)) for i in range(7))
 def set_twist(val):
     co, p = [0]*8, 0
@@ -67,32 +68,72 @@ def set_perm(val, n):
                 c += 1
     return arr
 
-def build_2d_pruning_table_numba(MT1, MT2, N1, N2, num_moves):
-    size = N1 * N2
-    prun = np.full(size, -1, dtype=np.int8)
+def build_2d_pruning_table(MT1, MT2, N1, N2, num_moves):
+    prun = np.full(N1 * N2, -1, dtype=np.int8)
     prun[0] = 0
-    q = np.zeros(size, dtype=np.int32)
-    q[0] = 0
-    head = 0; tail = 1
-    while head < tail:
-        curr = q[head]; head += 1; d = prun[curr]
-        x = curr // N2; y = curr % N2
+    front = np.array([0], dtype=np.int32)
+    depth = 0
+    while front.size > 0:
+        x, y = front // N2, front % N2
+        next_fronts = []
         for m in range(num_moves):
             nidx = MT1[x, m] * N2 + MT2[y, m]
-            if prun[nidx] == -1:
-                prun[nidx] = d + 1
-                q[tail] = nidx; tail += 1
+            valid = np.unique(nidx[prun[nidx] == -1])
+            valid = valid[prun[valid] == -1]
+            prun[valid] = depth + 1
+            next_fronts.append(valid)
+        if not next_fronts: break
+        front = np.concatenate(next_fronts)
+        depth += 1
     return prun
 
 INITIALIZED = False
+
+def _setup_fast_globals(twist_move, flip_move, slice_move, cp_move_p2, ep_move, sep_move, prun_p1_ts, prun_p1_fs, prun_p2_cp_sep, prun_p2_ep_sep):
+    """提取为独立函数，将 NumPy 数据转为 Python 原生高效格式"""
+    global twist_move_l, flip_move_l, slice_move_l, cp_move_p2_l, ep_move_l, sep_move_l
+    global prun_p1_ts_b, prun_p1_fs_b, prun_p2_cp_sep_b, prun_p2_ep_sep_b
+    
+    # 2D 矩阵转为 Python 嵌套 List（纯 Python 中 list[x][y] 读取比 NumPy 快得多）
+    twist_move_l = twist_move.tolist()
+    flip_move_l = flip_move.tolist()
+    slice_move_l = slice_move.tolist()
+    cp_move_p2_l = cp_move_p2.tolist()
+    ep_move_l = ep_move.tolist()
+    sep_move_l = sep_move.tolist()
+    
+    # 1D 修剪表直接转换为 C 级原生 bytes（无敌提速，-1 溢出为 255 完美促成自然剪枝）
+    prun_p1_ts_b = prun_p1_ts.tobytes()
+    prun_p1_fs_b = prun_p1_fs.tobytes()
+    prun_p2_cp_sep_b = prun_p2_cp_sep.tobytes()
+    prun_p2_ep_sep_b = prun_p2_ep_sep.tobytes()
+
 def init_engine():
-    global INITIALIZED, twist_move, flip_move, slice_move, cp_move_p2, ep_move, sep_move
-    global prun_p1_ts, prun_p1_fs, prun_p2_cp_sep, prun_p2_ep_sep, FULL_CUBIE_MOVES
+    global INITIALIZED, FULL_CUBIE_MOVES
     if INITIALIZED: return
+    with _INIT_LOCK:
+        if INITIALIZED: return  # 双重检查锁定
+    
     CUBIE_MOVES = []
     for b in BASE_CUBIES:
         m2 = multiply_cubies(b, b); m3 = multiply_cubies(m2, b)
         CUBIE_MOVES.extend([b, m2, m3])
+    FULL_CUBIE_MOVES = CUBIE_MOVES
+    
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    CACHE_FILE = os.path.join(BASE_DIR, "cl_tables_cache.npz")
+    
+    if os.path.exists(CACHE_FILE):
+        with np.load(CACHE_FILE) as data:
+            _setup_fast_globals(
+                data['twist_move'], data['flip_move'], data['slice_move'], 
+                data['cp_move_p2'], data['ep_move'], data['sep_move'],
+                data['prun_p1_ts'], data['prun_p1_fs'], data['prun_p2_cp_sep'], data['prun_p2_ep_sep']
+            )
+        INITIALIZED = True
+        return
+
+    # 生成表 (耗时操作，仅在无缓存时执行)
     twist_move = np.zeros((2187, 18), dtype=np.int32)
     for i in range(2187):
         co = set_twist(i)
@@ -119,11 +160,18 @@ def init_engine():
         for idx, m in enumerate(P2_MOVES): sep_move[i, idx] = get_perm([x - 8 for x in [ep[CUBIE_MOVES[m][2][j]] for j in range(12)][8:12]])
             
     cp_move_p2 = cp_move[:, P2_MOVES]
-    prun_p1_ts = build_2d_pruning_table_numba(twist_move, slice_move, 2187, 495, 18)
-    prun_p1_fs = build_2d_pruning_table_numba(flip_move, slice_move, 2048, 495, 18)
-    prun_p2_cp_sep = build_2d_pruning_table_numba(cp_move_p2, sep_move, 40320, 24, 10)
-    prun_p2_ep_sep = build_2d_pruning_table_numba(ep_move, sep_move, 40320, 24, 10)
-    FULL_CUBIE_MOVES = CUBIE_MOVES
+    prun_p1_ts = build_2d_pruning_table(twist_move, slice_move, 2187, 495, 18)
+    prun_p1_fs = build_2d_pruning_table(flip_move, slice_move, 2048, 495, 18)
+    prun_p2_cp_sep = build_2d_pruning_table(cp_move_p2, sep_move, 40320, 24, 10)
+    prun_p2_ep_sep = build_2d_pruning_table(ep_move, sep_move, 40320, 24, 10)
+    
+    np.savez_compressed(CACHE_FILE, twist_move=twist_move, flip_move=flip_move, slice_move=slice_move,
+                        cp_move_p2=cp_move_p2, ep_move=ep_move, sep_move=sep_move,
+                        prun_p1_ts=prun_p1_ts, prun_p1_fs=prun_p1_fs, 
+                        prun_p2_cp_sep=prun_p2_cp_sep, prun_p2_ep_sep=prun_p2_ep_sep)
+    
+    _setup_fast_globals(twist_move, flip_move, slice_move, cp_move_p2, ep_move, sep_move, 
+                        prun_p1_ts, prun_p1_fs, prun_p2_cp_sep, prun_p2_ep_sep)
     INITIALIZED = True
 
 def parse_state(s_str):
@@ -147,22 +195,29 @@ def parse_state(s_str):
         else: eo[i] = 1
     return cp, co, ep, eo
 
-# 🌟 新增 mode="optimal" 选项
-def solve(state_string, mode="twophase", max_depth=25, stop_flag=None):
+def solve(state_string, mode="twophase", max_depth=22, stop_flag=None):
     init_engine()
     cp, co, ep, eo = parse_state(state_string)
     twist, flip, slc = get_twist(co), get_flip(eo), get_slice(ep)
     
     if twist == 0 and flip == 0 and slc == 0:
-        if get_perm(cp) == 0 and get_perm(ep[:8]) == 0 and get_perm([x-8 for x in ep[8:12]]) == 0: return []
+        if get_perm(cp) == 0 and get_perm(ep[:8]) == 0 and get_perm([x-8 for x in ep[8:12]]) == 0: 
+            yield ""
+            return
 
-    optimal_min_len = [max_depth + 1]
+    found_solutions = set()
+    global_min = [max_depth + 1]
+    
+    class StopSearchException(Exception): pass
 
     def search_p2(cp, ep, sep, g, bound, last_face, path):
-        if stop_flag and stop_flag(): return
-        h = prun_p2_cp_sep[cp * 24 + sep]
-        h2 = prun_p2_ep_sep[ep * 24 + sep]
-        h = h if h > h2 else h2
+        if stop_flag and stop_flag(): raise StopSearchException()
+        
+        # 🌟 黑科技：用 bytes 原生读取替代 Numpy，避免装箱开销，无需 min/max 函数！
+        h1 = prun_p2_cp_sep_b[cp * 24 + sep]
+        h2 = prun_p2_ep_sep_b[ep * 24 + sep]
+        h = h1 if h1 > h2 else h2
+        
         if g + h > bound: return
         
         if h == 0 and g == bound:
@@ -171,55 +226,88 @@ def solve(state_string, mode="twophase", max_depth=25, stop_flag=None):
             
         for idx, m in enumerate(P2_MOVES):
             c_face = m // 3
-            if c_face == last_face or c_face == last_face - 3: continue 
+            if c_face == last_face: continue 
+            if c_face in (3, 4, 5) and last_face == c_face - 3: continue 
+            
             path.append(m)
-            yield from search_p2(cp_move_p2[cp, idx], ep_move[ep, idx], sep_move[sep, idx], g+1, bound, c_face, path)
+            # 🌟 使用预处理的 Python List 替代 Numpy 切片访问
+            yield from search_p2(cp_move_p2_l[cp][idx], ep_move_l[ep][idx], sep_move_l[sep][idx], g+1, bound, c_face, path)
             path.pop()
         
-    def search_p1(tws, flp, slc, g, bound, last_face, path):
-        if stop_flag and stop_flag(): return
-        h = prun_p1_ts[tws * 495 + slc]
-        h2 = prun_p1_fs[flp * 495 + slc]
-        h = h if h > h2 else h2
+    def search_p1(tws, flp, slc, g, bound, p2_target_len, last_face, path):
+        if stop_flag and stop_flag(): raise StopSearchException()
+        
+        # 🌟 同理，bytes 原生读取
+        h1 = prun_p1_ts_b[tws * 495 + slc]
+        h2 = prun_p1_fs_b[flp * 495 + slc]
+        h = h1 if h1 > h2 else h2
+        
         if g + h > bound: return
         
         if h == 0 and g == bound:
             c_cp, c_co, c_ep, c_eo = cp, co, ep, eo
             for m in path: c_cp, c_co, c_ep, c_eo = multiply_cubies((c_cp, c_co, c_ep, c_eo), FULL_CUBIE_MOVES[m])
             p2_cp, p2_ep, p2_sep = get_perm(c_cp), get_perm(c_ep[:8]), get_perm([x-8 for x in c_ep[8:12]])
-            p2_h = max(prun_p2_cp_sep[p2_cp * 24 + p2_sep], prun_p2_ep_sep[p2_ep * 24 + p2_sep])
             
-            # Optimal 模式允许 P2 探索到极限，Two-phase 模式固定 P2 最大 15步
-            max_p2_depth = optimal_min_len[0] - g if mode == "optimal" else 15
+            ph1 = prun_p2_cp_sep_b[p2_cp * 24 + p2_sep]
+            ph2 = prun_p2_ep_sep_b[p2_ep * 24 + p2_sep]
+            p2_h = ph1 if ph1 > ph2 else ph2
             
-            for p2_bound in range(p2_h, max_p2_depth + 1):
+            if p2_target_len is not None:
+                p2_bounds = [p2_target_len] if p2_target_len >= p2_h else []
+            else:
+                max_p2 = global_min[0] - g - 1
+                p2_bounds = range(p2_h, max_p2 + 1)
+
+            for p2_bound in p2_bounds:
+                found_in_this_p1 = False
                 for p2_path in search_p2(p2_cp, p2_ep, p2_sep, 0, p2_bound, path[-1]//3 if path else -1, []):
-                    tot_len = g + p2_bound
-                    if tot_len < optimal_min_len[0]:
-                        optimal_min_len[0] = tot_len
-                    yield " ".join([MOVES_STR[m] for m in path + p2_path])
-                    
-                    if mode == "twophase": return
+                    sol_str = " ".join([MOVES_STR[m] for m in path + p2_path])
+                    if sol_str not in found_solutions:
+                        found_solutions.add(sol_str)
+                        if p2_target_len is None:
+                            tot_len = g + p2_bound
+                            if tot_len < global_min[0]:
+                                global_min[0] = tot_len
+                        yield sol_str
+                        found_in_this_p1 = True
+                        
+                if p2_target_len is None and found_in_this_p1:
+                    break
 
         for m in range(18):
             c_face = m // 3
-            if c_face == last_face or c_face == last_face - 3: continue
+            if c_face == last_face: continue
+            if c_face in (3, 4, 5) and last_face == c_face - 3: continue
+            
             path.append(m)
-            yield from search_p1(twist_move[tws, m], flip_move[flp, m], slice_move[slc, m], g+1, bound, c_face, path)
+            # 🌟 List 提速读取
+            yield from search_p1(twist_move_l[tws][m], flip_move_l[flp][m], slice_move_l[slc][m], g+1, bound, p2_target_len, c_face, path)
             path.pop()
 
-    # 引擎入口：返回包含所有解的 list
-    all_sols = []
-    for p1_bound in range(0, max_depth + 1):
-        if mode == "optimal" and p1_bound >= optimal_min_len[0]:
-            break  # 达到最短解的极限，立刻停止，确保全是 God's Number 长度的最优解！
+    try:
+        if mode == "optimal":
+            absolute_min = None
+            margin = 2  
             
-        for sol in search_p1(int(twist), int(flip), int(slc), 0, p1_bound, -1, []):
-            all_sols.append(sol)
-            if mode == "twophase": return [sol] # 两阶段找到第一个就跑！
-            
-    # 如果是 Optimal 模式，过滤并返回所有长度等于最短长度的解
-    if mode == "optimal" and all_sols:
-        return [s for s in all_sols if len(s.split()) == optimal_min_len[0]]
-        
-    return all_sols
+            for target_len in range(0, max_depth + 1):
+                if stop_flag and stop_flag(): break
+                if absolute_min is not None and target_len > absolute_min + margin:
+                    break
+                
+                for p1_bound in range(0, target_len + 1):
+                    if stop_flag and stop_flag(): break
+                    p2_target = target_len - p1_bound
+                    for sol in search_p1(int(twist), int(flip), int(slc), 0, p1_bound, p2_target, -1, []):
+                        if absolute_min is None:
+                            absolute_min = target_len  
+                        yield sol
+        else:
+            for p1_bound in range(0, max_depth + 1):
+                if stop_flag and stop_flag(): break
+                if p1_bound >= global_min[0]: 
+                    break 
+                yield from search_p1(int(twist), int(flip), int(slc), 0, p1_bound, None, -1, [])
+                
+    except StopSearchException:
+        pass
