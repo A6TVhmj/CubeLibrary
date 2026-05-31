@@ -1,0 +1,28 @@
+# Build output
+dist_final/
+dist_new/
+CubeLibrary.onefile-build/
+CubeLibrary.build/
+CubeLibrary.dist/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Compiled
+*.exe
+*.dll
+
+# Temp scripts
+_git_push.py
+_gh_*.py
+
+# Old standalone
+CubeLibrary_standalone.txt
+
+# Icon copies
+icon - 副本.png
+
+# Original CubeExplorer (Delphi source)
+CubeExplorer-master/
