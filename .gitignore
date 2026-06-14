@@ -5,6 +5,11 @@ __pycache__/
 
 # C extensions
 *.so
+*.pyd
+*.c
+
+# Cython build artifacts
+*.cp313-win_amd64.pyd
 
 # Distribution / packaging
 .Python
