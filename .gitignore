@@ -221,3 +221,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Nuitka 构建产物
+CubeLibrary.exe
+CubeLibrary.build/
+CubeLibrary.dist/
+CubeLibrary.onefile-build/

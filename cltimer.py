@@ -4,7 +4,7 @@ import tkinter as tk
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from ttkbootstrap.dialogs import Querybox
-from ttkbootstrap.toast import ToastNotification
+from ttkbootstrap import ToastNotification
 
 class CLTimerTab(ttk.Frame):
     def __init__(self, master, app_instance, tr_func):
@@ -42,7 +42,10 @@ class CLTimerTab(ttk.Frame):
         self.tree.heading("Time", text=self.tr("timer_col_time"))
         self.tree.column("ID", width=40, anchor=CENTER)
         self.tree.column("Time", width=100, anchor=CENTER)
-        self.tree.pack(fill=BOTH, expand=True)
+        vbar = ttk.Scrollbar(self.left_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vbar.set)
+        self.tree.pack(side=LEFT, fill=BOTH, expand=True)
+        vbar.pack(side=RIGHT, fill=Y)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
         top_bar = ttk.Frame(self.right_frame)
@@ -99,12 +102,12 @@ class CLTimerTab(ttk.Frame):
 
     def _on_scramble_hover(self, event):
         self.lbl_scramble.configure(cursor="hand2")
-        self.lbl_scramble.configure(foreground=ttk.Style().colors.primary)
+        self.lbl_scramble.configure(foreground=self.app.style.colors.primary)
 
     def _on_scramble_leave(self, event):
         self.lbl_scramble.configure(cursor="")
         # 【修复 BUG】：改为 fg
-        self.lbl_scramble.configure(foreground=ttk.Style().colors.fg)
+        self.lbl_scramble.configure(foreground=self.app.style.colors.fg)
 
     def _copy_scramble(self, event):
         scramble_text = self.lbl_scramble.cget("text")
