@@ -227,3 +227,6 @@ CubeLibrary.exe
 CubeLibrary.build/
 CubeLibrary.dist/
 CubeLibrary.onefile-build/
+
+# 运行时用户配置（本地个人化，不入库）
+cl_config.json

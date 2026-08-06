@@ -3,6 +3,8 @@
 **CubeLibrary** 是一个现代魔方桌面工作站：交互式展开图、双引擎求解、残缺状态推导、
 专业测速、高级公式解析，基于 Python + Cython 与 ttkbootstrap 2.x 全新实现。
 
+搜索核心由 Cython 编译，效率可与经典 Delphi 原生实现（如 Cube Explorer）打平；
+整套剪枝表仅约 3.6MB，是经典实现（数百 MB）的数百分之一。
 算法思想受 Herbert Kociemba 两阶段理论启发，从零实现；计时器模块的设计参考了
 csTimer。
 
@@ -21,19 +23,11 @@ csTimer。
 ## 引擎设计
 
 - **坐标系统**：twist / flip / slice / corner / edge 分解，相位内剪枝表
-- **剪枝表**：twist×slice、flip×slice、twist×flip 三张 2D 表 + 残差缓存
+- **剪枝表**：twist×slice、flip×slice、twist×flip 三张 2D 表 + 残差缓存，整套约 3.6MB
 - **快解模式**：phase-1 到达 G1 即在小窗口内尝试 phase-2（首解秒级），窗口失败自动扩大兜底
 - **搜索规范**：同面连续、相对面镜像、交替三次（X-Y-X）冗余消除
 - **线程安全**：每次求解独立状态，Cython 搜索释放 GIL，残缺补全可多核并行
-- **残缺补全**：角块 DFS（朝向和）+ 棱块 DFS（朝向和）+ 角棱奇偶匹配，Cython 迭代实现（生成速度数百倍于 Python 版）
-
-## 与 Cube Explorer 5.15 的少量对比（依据其公开源码）
-
-| 维度 | Cube Explorer 5.15 | CubeLibrary |
-|---|---|---|
-| 搜索效率 | Delphi 原生编译 | Cython 编译内核，效率打平 |
-| 剪枝表 | 数百 MB（26.8MB 两阶段表、430MB 中心朝向表、705MB Huge 最优表） | 约 3.6MB 超轻量 |
-| 残缺求解 | 子空间坐标 + 专属剪枝表直接搜索（down 坐标 / EdgeUnknown / Edge51-53 部分置换表） | 合法补全枚举 + 完整求解（朝向和 / 奇偶约束 + 估算门控），非爆搜 |
+- **残缺补全**：角块 DFS（朝向和）+ 棱块 DFS（朝向和）+ 角棱奇偶匹配，Cython 迭代实现——约束枚举而非爆搜，配合估算门控防组合爆炸（生成速度数百倍于 Python 版）
 
 ## 运行
 
@@ -48,6 +42,8 @@ python CubeLibrary.py
 
 ## 构建（Nuitka）
 
+> 注：`cl_tables_cache.npz` 为运行时剪枝表（不入库），首次运行 `python CubeLibrary.py` 时由 `init_engine()` 自动生成；打包前请先从本地生成该文件。
+
 ```bash
 python -m nuitka --standalone --enable-plugin=tk-inter --windows-console-mode=disable \
     --windows-icon-from-ico=icon.ico \
@@ -60,6 +56,5 @@ python -m nuitka --standalone --enable-plugin=tk-inter --windows-console-mode=di
 
 GPL-3.0。
 
-- **Herbert Kociemba**：两阶段算法理论——算法思想来源
+- **Herbert Kociemba**：两阶段算法理论及其经典实现 Cube Explorer——算法思想来源
 - **csTimer**：计时器模块的设计参考
-- **Cube Explorer**：经典参考实现（算法对照）

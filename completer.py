@@ -3,93 +3,17 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import cl_core
 
-_USE_CYTHON_COMPLETER = False
 try:
     from cl_search import generate_valid_completes as _cy_completer_gen
-    _USE_CYTHON_COMPLETER = True
-except Exception:
-    _USE_CYTHON_COMPLETER = False
+except ImportError:
+    _cy_completer_gen = None
 
-CORNER_FACELETS = [(8,9,20), (6,18,38), (0,36,47), (2,45,11), (29,26,15), (27,44,24), (33,53,42), (35,17,51)]
-EDGE_FACELETS   = [(5,10), (7,19), (3,37), (1,46), (32,16), (28,25), (30,43), (34,52), (23,12), (21,41), (50,39), (48,14)]
-STD_CORNERS = [('U','R','F'), ('U','F','L'), ('U','L','B'), ('U','B','R'), ('D','F','R'), ('D','L','F'), ('D','B','L'), ('D','R','B')]
-STD_EDGES   = [('U','R'), ('U','F'), ('U','L'), ('U','B'), ('D','R'), ('D','F'), ('D','L'), ('D','B'), ('F','R'), ('F','L'), ('B','L'), ('B','R')]
-
-def _get_corner_rotations(c):
-    return [c, (c[1], c[2], c[0]), (c[2], c[0], c[1])]
-
-def _get_edge_rotations(e):
-    return [e, (e[1], e[0])]
-
-def _match_piece(target, piece):
-    is_ignore_ori = any(t.islower() for t in target if t != '?')
-    if is_ignore_ori:
-        target_colors = set(t.upper() for t in target if t != '?')
-        piece_colors = set(piece)
-        return target_colors.issubset(piece_colors)
-    else:
-        for t, p in zip(target, piece):
-            if t != '?' and t != p: return False
-        return True
 
 def generate_valid_completes(pseudo_str, stop_flag=lambda: False):
-    """残缺状态补全生成器（优先 Cython 快速版，Python 兜底）。"""
-    if _USE_CYTHON_COMPLETER:
-        yield from _cy_completer_gen(pseudo_str, stop_flag)
-        return
-    c_targets = [tuple(pseudo_str[i] for i in idx) for idx in CORNER_FACELETS]
-    e_targets = [tuple(pseudo_str[i] for i in idx) for idx in EDGE_FACELETS]
-    valid_corners = []
-
-    def dfs_corners(slot, used_mask, curr_cp, curr_co):
-        if stop_flag(): return
-        if slot == 8:
-            if sum(curr_co) % 3 == 0: 
-                valid_corners.append((list(curr_cp), list(curr_co)))
-            return
-        target = c_targets[slot]
-        for i, std_c in enumerate(STD_CORNERS):
-            if not (used_mask & (1 << i)):
-                for ori, rot_c in enumerate(_get_corner_rotations(std_c)):
-                    if _match_piece(target, rot_c):
-                        curr_cp.append(i); curr_co.append(ori)
-                        dfs_corners(slot + 1, used_mask | (1 << i), curr_cp, curr_co)
-                        curr_co.pop(); curr_cp.pop()
-
-    dfs_corners(0, 0, [], [])
-    if not valid_corners or stop_flag(): return
-
-    def dfs_edges(slot, used_mask, curr_ep, curr_eo):
-        if stop_flag(): return
-        if slot == 12:
-            if sum(curr_eo) % 2 == 0:
-                ep_parity = cl_core.perm_parity(curr_ep)
-                for cp, co in valid_corners:
-                    if stop_flag(): return
-                    if cl_core.perm_parity(cp) == ep_parity:
-                        yield build_full_string(cp, co, curr_ep, curr_eo)
-            return
-        target = e_targets[slot]
-        for i, std_e in enumerate(STD_EDGES):
-            if not (used_mask & (1 << i)):
-                for ori, rot_e in enumerate(_get_edge_rotations(std_e)):
-                    if _match_piece(target, rot_e):
-                        curr_ep.append(i); curr_eo.append(ori)
-                        yield from dfs_edges(slot + 1, used_mask | (1 << i), curr_ep, curr_eo)
-                        curr_eo.pop(); curr_ep.pop()
-    yield from dfs_edges(0, 0, [], [])
-
-def build_full_string(cp, co, ep, eo):
-    facelets = ['?'] * 54
-    for i, c in enumerate([4, 13, 22, 31, 40, 49]):
-        facelets[c] = ['U', 'R', 'F', 'D', 'L', 'B'][i]
-    for i in range(8):
-        for j, color in enumerate(_get_corner_rotations(STD_CORNERS[cp[i]])[co[i]]):
-            facelets[CORNER_FACELETS[i][j]] = color
-    for i in range(12):
-        for j, color in enumerate(_get_edge_rotations(STD_EDGES[ep[i]])[eo[i]]):
-            facelets[EDGE_FACELETS[i][j]] = color
-    return "".join(facelets)
+    """残缺状态补全生成器（Cython 实现，cl_search 扩展）。"""
+    if _cy_completer_gen is None:
+        raise ImportError("Cython 残缺补全不可用（需要 cl_search 扩展）")
+    yield from _cy_completer_gen(pseudo_str, stop_flag)
 
 
 def _slot_matches(target, rot):
@@ -102,6 +26,7 @@ def _slot_matches(target, rot):
         elif tk != rk:
             return False
     return True
+
 
 def estimate_candidates(state_string):
     """估算补全组合数（排列感知，接近真实值）。
@@ -142,6 +67,7 @@ def estimate_candidates(state_string):
     corner_combo = c_prod / 3.0          # 角朝向和约束
     edge_combo = e_prod / 2.0            # 棱朝向和约束
     return corner_combo * edge_combo / 2.0, corner_combo  # 奇偶匹配 /2
+
 
 MAX_CANDIDATES = 1000000000  # 完整补全组合数阈值（流式+提交上限兜底，基本不限制）
 MAX_CORNER_COMBO = 1000000  # 角块组合数阈值（预收集阶段瓶颈）
