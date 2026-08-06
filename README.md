@@ -4,7 +4,7 @@
 专业测速、高级公式解析，基于 Python + Cython 与 ttkbootstrap 2.x 全新实现。
 
 算法思想受 Herbert Kociemba 两阶段理论启发，从零实现；计时器模块的设计参考了
-csTimer。Cube Explorer 仅作为算法灵感来源与对比参照，本项目不包含其代码。
+csTimer。
 
 ## 核心能力
 
@@ -17,25 +17,6 @@ csTimer。Cube Explorer 仅作为算法灵感来源与对比参照，本项目�
 - **高级公式解析**：交换子 `[R, U]`、共轭 `F: [R, U]`、循环 `(R U)3`、整体逆运算
 - **状态导入/导出**：54 字符状态字符串导入（可指定顶面/正面朝向）+ 导出；导入自动合法性检查
 - **多语言与主题**：简体中文 / 繁體中文 / English / Polski 热切换；15 个主题家族 × 明暗
-
-## 与 Cube Explorer 5.15 的对比（依据其公开源码）
-
-| 维度 | Cube Explorer 5.15 | CubeLibrary |
-|---|---|---|
-| 语言/平台 | Delphi | Python + Cython，跨平台 |
-| 两阶段求解 | 有（快解逐步优化） | 有（快解先行 + 窗口收紧） |
-| 最优求解 | 有（Huge/UltraHuge 大剪枝表） | 有（双层迭代 + 小表） |
-| 残缺求解 | 子空间坐标 + 专属剪枝表（down 坐标、EdgeUnknown 等） | 枚举补全（Cython 迭代 DFS + 奇偶匹配） |
-| 对称性 | 48 对称表 + 对称编辑器 + 搜索降维 | 无（仅输入 24 转体规范化） |
-| 图案搜索 | 有（PatternSearch） | 无 |
-| Coset Explorer | 有（批量最优解） | 无 |
-| 三循环求解 | 有（TripSearch） | 无 |
-| 外设接口 | WebServer（机器人接口）、WebCam 读色 | 无 |
-| 中心朝向（Supergroup） | 支持 | 不支持（M/E/S 报不可解） |
-| 计时器 | 无 | 有（WCA 风格，参考 csTimer） |
-| 公式解析 | 机动字符串输入（基础） | 交换子/共轭/循环（高级） |
-| 界面 | 原生控件 | ttkbootstrap 2.x（30 主题、明暗、4 语言） |
-| 随机数 | MT19937 | Python random |
 
 ## 引擎设计
 
