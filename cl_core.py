@@ -1,14 +1,6 @@
-# ==============================================================
-# cl_core.py — Cube Library 求解引擎（Cython 加速版）
-# 合并了: 表构建 + 坐标计算 + 状态解析 + solve() 入口
-# 搜索热路径由 cl_search.pyx (Cython) 提供 ~30x 加速
-# 若 Cython 模块不可用，自动 fallback 到纯 Python 搜索
-# ==============================================================
-
 import os, math, threading
 import numpy as np
 
-# 尝试导入 Cython 搜索模块
 try:
     import cl_search as _cy
     _HAS_CYTHON = True
@@ -16,7 +8,6 @@ except ImportError:
     _cy = None
     _HAS_CYTHON = False
 
-# ── 常量 ─────────────────────────────────────────────────────
 _INIT_LOCK = threading.Lock()
 MOVES_STR = ["U","U2","U'","R","R2","R'","F","F2","F'",
              "D","D2","D'","L","L2","L'","B","B2","B'"]
@@ -44,7 +35,6 @@ for _lf in range(6):
     for _cf in (3,4,5):
         if _lf == _cf-3: CAN_FOLLOW[_lf+1][_cf] = False
 
-# ── 基础转动 ─────────────────────────────────────────────────
 cp_U=[3,0,1,2,4,5,6,7];co_U=[0]*8;ep_U=[3,0,1,2,4,5,6,7,8,9,10,11];eo_U=[0]*12
 cp_R=[4,1,2,0,7,5,6,3];co_R=[2,0,0,1,1,0,0,2];ep_R=[8,1,2,3,11,5,6,7,4,9,10,0];eo_R=[0]*12
 cp_F=[1,5,2,3,0,4,6,7];co_F=[1,2,0,0,2,1,0,0];ep_F=[0,9,2,3,4,8,6,7,1,5,10,11];eo_F=[0,1,0,0,0,1,0,0,1,1,0,0]
@@ -54,7 +44,6 @@ cp_B=[0,1,3,7,4,5,2,6];co_B=[0,0,1,2,0,0,2,1];ep_B=[0,1,2,11,4,5,6,10,8,9,3,7];e
 BASE_CUBIES = [(cp_U,co_U,ep_U,eo_U),(cp_R,co_R,ep_R,eo_R),(cp_F,co_F,ep_F,eo_F),
                (cp_D,co_D,ep_D,eo_D),(cp_L,co_L,ep_L,eo_L),(cp_B,co_B,ep_B,eo_B)]
 
-# ── 坐标函数 (展开优化) ─────────────────────────────────────
 def multiply_cubies(c1, c2):
     c1_0,c1_1,c1_2,c1_3 = c1; c2_0,c2_1,c2_2,c2_3 = c2
     return (
@@ -113,17 +102,6 @@ def get_perm8(arr):
 def get_perm4(arr):
     a0,a1,a2,a3=arr[0],arr[1],arr[2],arr[3]
     return ((a1<a0)+(a2<a0)+(a3<a0))*6+((a2<a1)+(a3<a1))*2+(a3<a2)
-def get_perm(arr):
-    n=len(arr)
-    if n==8: return get_perm8(arr)
-    if n==4: return get_perm4(arr)
-    r=0
-    for i in range(n):
-        c=0; ai=arr[i]
-        for j in range(i+1,n):
-            if arr[j]<ai: c+=1
-        r+=c*FACT[n-1-i]
-    return r
 def set_perm(val,n):
     arr=[0]*n; avail=list(range(n))
     for i in range(n):
@@ -140,7 +118,6 @@ def perm_parity(arr):
                 inv ^= 1
     return inv
 
-# ── Pruning table builder ────────────────────────────────────
 def build_2d_pruning_table(MT1,MT2,N1,N2,num_moves):
     total=N1*N2; prun=np.full(total,-1,dtype=np.int8); prun[0]=0
     front=np.array([0],dtype=np.int32); depth=0; filled=1
@@ -174,7 +151,6 @@ def build_tf_pruning_table(tw, fl, N1=2187, N2=2048, num_moves=18):
         front=np.unique(np.concatenate(nexts)); filled+=front.size; depth+=1
     return prun
 
-# ── parse_state ──────────────────────────────────────────────
 def parse_state(s_str):
     """解析状态字符串。
 
@@ -202,7 +178,6 @@ def parse_state(s_str):
         else:                    eo[i]=1
     return cp,co,ep,eo
 
-# ── Engine init ──────────────────────────────────────────────
 INITIALIZED = False
 FULL_CUBIE_MOVES = None
 
@@ -256,7 +231,6 @@ def init_engine():
                           prun_p1_ts=prun_p1_ts,prun_p1_fs=prun_p1_fs,prun_p1_tf=prun_p1_tf,
                           prun_p2_cp_sep=prun_p2_cp_sep,prun_p2_ep_sep=prun_p2_ep_sep)
             np.savez_compressed(fp, **tables)
-        # 加载到 Cython 或 Python fallback
         if _HAS_CYTHON:
             _cy.load_tables(tables['twist_move'],tables['flip_move'],tables['slice_move'],
                             tables['cp_move_p2'],tables['ep_move'],tables['sep_move'],
@@ -267,7 +241,6 @@ def init_engine():
             _setup_py_globals(tables)
         INITIALIZED = True
 
-# ── Python fallback globals ──────────────────────────────────
 def _setup_py_globals(t):
     global twist_move_l,flip_move_l,slice_move_l,cp_move_p2_l,ep_move_l,sep_move_l
     global prun_p1_ts_b,prun_p1_fs_b,prun_p1_tf_b,prun_p2_cp_sep_b,prun_p2_ep_sep_b
@@ -278,7 +251,6 @@ def _setup_py_globals(t):
     prun_p1_tf_b=t['prun_p1_tf'].tobytes()
     prun_p2_cp_sep_b=t['prun_p2_cp_sep'].tobytes(); prun_p2_ep_sep_b=t['prun_p2_ep_sep'].tobytes()
 
-# ── 整体转动表（x/y/z，54 格置换：位置 i 的内容移动到 perm[i]） ──
 _faces_idx = {'U': 0, 'R': 1, 'F': 2, 'D': 3, 'L': 4, 'B': 5}
 CENTER_INDICES = [4, 13, 22, 31, 40, 49]
 _ROT_RAW = {
@@ -403,13 +375,11 @@ def solve(state_string, mode="twophase", max_depth=22, stop_flag=None):
     else:
         yield from _solve_python(cp,co,ep,eo,int(twist),int(flip),int(slc),mode,max_depth,stop_flag)
 
-# ── 纯 Python 搜索 (fallback) ───────────────────────────────
 def _solve_python(cp,co,ep,eo,twist,flip,slc,mode,max_depth,stop_flag):
     found_sols=set(); gmin=[max_depth+1]
     _tw=twist_move_l;_fl=flip_move_l;_sl=slice_move_l;_cp=cp_move_p2_l;_ep=ep_move_l;_sp=sep_move_l
     _pts=prun_p1_ts_b;_pfs=prun_p1_fs_b;_ptf=prun_p1_tf_b
     _pcs=prun_p2_cp_sep_b;_pes=prun_p2_ep_sep_b
-    _pjm=_P2_JOINT_MOVE;_pjp=_P2_JOINT_PRUN;_pcp=_P2_CP_PRUN
     _cm=FULL_CUBIE_MOVES;_p2=P2_MOVES;_fo=FACE_OF;_cf=CAN_FOLLOW;_ms=MOVES_STR;_mc=multiply_cubies
     _nc=[0]; _sf=stop_flag
     class Stop(Exception): pass

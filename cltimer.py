@@ -6,6 +6,7 @@ from ttkbootstrap.constants import *
 from ttkbootstrap.dialogs import Querybox
 from ttkbootstrap import ToastNotification
 
+
 class CLTimerTab(ttk.Frame):
     def __init__(self, master, app_instance, tr_func):
         super().__init__(master, padding=10)
@@ -23,10 +24,9 @@ class CLTimerTab(ttk.Frame):
         self.ready_job = None 
         self.update_job = None 
         self._release_debounce_job = None 
-        
+
         self._create_ui()
         self._generate_new_scramble()
-        
     def _create_ui(self):
         self.left_frame = ttk.Frame(self, width=200)
         self.left_frame.pack(side=LEFT, fill=Y, padx=(0, 10))
@@ -87,7 +87,7 @@ class CLTimerTab(ttk.Frame):
 
         self.btn_plus2 = ttk.Button(bot_frame, text="+2", bootstyle="warning-outline", command=lambda: self._toggle_penalty("+2"))
         self.btn_plus2.pack(side=RIGHT, padx=5)
-        
+
         self.update_stats()
 
     def update_strings(self):

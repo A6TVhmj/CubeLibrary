@@ -69,8 +69,8 @@ def estimate_candidates(state_string):
     return corner_combo * edge_combo / 2.0, corner_combo  # 奇偶匹配 /2
 
 
-MAX_CANDIDATES = 1000000000  # 完整补全组合数阈值（流式+提交上限兜底，基本不限制）
-MAX_CORNER_COMBO = 1000000  # 角块组合数阈值（预收集阶段瓶颈）
+MAX_CANDIDATES = 1000000000  # 完整补全组合数阈值
+MAX_CORNER_COMBO = 1000000  # 角块组合数阈值
 
 
 def solve_incomplete_stream(state_string, queue, stop_flag, search_mode, max_workers=0):
@@ -99,7 +99,7 @@ def solve_incomplete_stream(state_string, queue, stop_flag, search_mode, max_wor
                 rot_inv_perm = inv_perm
                 break
 
-    # 补全组合数预算判断（排列感知估算）
+    # 补全组合数预算判断
     est, corner_combo = estimate_candidates(state_string)
     if corner_combo > MAX_CORNER_COMBO or est > MAX_CANDIDATES:
         queue.put(("ERROR", f"补全组合数估算约 {est:.2e}（角块组合 {corner_combo:.2e}），组合爆炸，请减少未知格子"))
@@ -109,7 +109,7 @@ def solve_incomplete_stream(state_string, queue, stop_flag, search_mode, max_wor
     seen_sols = set()
     lock = threading.Lock()
 
-    # 单个状态求解：解出一个立即上报（不等待），继续找下一个解直到停止/耗尽
+    # 单个状态求解：解出一个立即上报
     def solve_single(state):
         if stop_flag():
             return

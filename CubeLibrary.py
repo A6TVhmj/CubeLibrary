@@ -534,7 +534,6 @@ class CubeLibraryApp(ttk.Window):
         self.after(0, lambda: self.log_text.see(tk.END))
 
     def _import_state_string(self, s):
-        """把 54 字符状态导入编辑器（? = 灰色，小写 = 忽略朝向）。"""
         for i in range(54):
             ch = s[i]
             if ch == '?':
@@ -993,6 +992,7 @@ class ContinuousSearchDialog(ttk.Toplevel):
                 
         if not self.stop_requested:
             self.after(50, self.process_queue)
+
 
 if __name__ == "__main__":
     app = CubeLibraryApp()
