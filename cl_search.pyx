@@ -1,14 +1,8 @@
 # cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
 """
-cl_search.pyx — Cython IDA* search core for Cube Library. (A 版：快解模式)
-Thread-safe: 每次调用 malloc 独立的 SState，不使用全局可变状态。
-Compile: python setup.py build_ext --inplace
-
-A 版改动：
-1. 新增 twist×flip 组合剪枝表 prun_tf，h = max(h_ts, h_fs, h_tf)，剪枝更强。
-2. twophase 快解模式：phase-1 到达 G1 即尝试 phase-2（不再要求恰好 bound），
-   phase-2 只在小窗口 [ph, ph+4] 内搜索，首个解秒级产出，gmin 逐步收紧。
-3. 搜索中途周期性检查 stop 标志（每 1M 节点），停止按钮立即可用。
+cl_search.pyx — Cython IDA* search core for Cube Library.
+线程安全：每次调用 malloc 独立的 SState，不使用全局可变状态。
+编译：python setup.py build_ext --inplace
 """
 import numpy as np
 cimport numpy as cnp
@@ -20,8 +14,6 @@ cnp.import_array()
 DEF MD  = 30
 DEF MS  = 256
 DEF MP2 = 512
-
-# ── 搜索状态结构体 ───────────────────────────────────────────
 ctypedef struct SState:
     # move tables (只读指针，所有线程共享)
     int* twist_move
@@ -39,7 +31,6 @@ ctypedef struct SState:
     int face_of[18]
     int p2_moves[10]
     bint can_follow[7][6]
-    # 搜索可变状态（每线程独立）
     int scp[32][8]
     int sco[32][8]
     int sep_[32][12]
@@ -54,12 +45,10 @@ ctypedef struct SState:
     int sol_cnt
     int gmin
     int max_sol
-    # 中途中断支持
     PyObject* stop_ref
     int stop_req
     long long node_cnt
 
-# ── 只读共享模板（load_tables 写入一次，之后只读） ───────────
 ctypedef struct SharedTables:
     int* twist_move
     int* flip_move
@@ -78,21 +67,14 @@ ctypedef struct SharedTables:
     bint can_follow[7][6]
 
 cdef SharedTables _shared
-_np_refs = {}           # prevent GC
+_np_refs = {}
 _tables_loaded = False
 
 MOVES_STR = ["U","U2","U'","R","R2","R'","F","F2","F'",
              "D","D2","D'","L","L2","L'","B","B2","B'"]
 
-# ── helpers (nogil) ──────────────────────────────────────────
-
 cdef inline bint can_follow_ok(int lf2, int lf, int cf) noexcept nogil:
-    """面序列合法性：
-    1. 禁同面连续（U U'）；
-    2. 禁相对面单向相邻（U→D、R→L、F→B）——相对面转动可交换，
-       两种顺序本质等价，只保留一个方向；
-    3. 禁相对面交替三次（X Y X，防御，已被 2 覆盖）。
-    """
+    """面序列规则：禁同面连续、禁相对面单向相邻、禁相对面交替三次。"""
     if cf == lf:
         return False
     if (lf == 0 and cf == 3) or (lf == 1 and cf == 4) or (lf == 2 and cf == 5):
@@ -133,8 +115,17 @@ cdef inline void apply_mv(SState* S, int g, int mv) noexcept nogil:
         S.sep_[g+1][j] = S.sep_[g][idx]
         S.seo[g+1][j] = (S.seo[g][idx] + cm[28+j]) & 1
 
-# ── Phase 2 (nogil) ─────────────────────────────────────────
-
+cdef inline void _emit_p2(SState* S, int g, bint upd_gmin) noexcept nogil:
+    cdef int ri, tot
+    for ri in range(S.p2_cnt):
+        if S.sol_cnt >= S.max_sol: return
+        tot = g + S.p2_lens[ri]
+        if upd_gmin and tot < S.gmin: S.gmin = tot
+        S.sol_len[S.sol_cnt] = tot
+        memcpy(&S.sol[S.sol_cnt][0], S.p1_path, g*sizeof(int))
+        memcpy(&S.sol[S.sol_cnt][g], &S.p2_res[ri][0],
+               S.p2_lens[ri]*sizeof(int))
+        S.sol_cnt += 1
 cdef void srch_p2(SState* S, int cpv, int epv, int sepv,
                   int g, int bound, int lf, int lf2) noexcept nogil:
     cdef int h1, h2, h, idx, m, cf
@@ -155,8 +146,6 @@ cdef void srch_p2(SState* S, int cpv, int epv, int sepv,
         srch_p2(S, S.cp_move_p2[cpv*10+idx], S.ep_move[epv*10+idx],
                 S.sep_move[sepv*10+idx], g+1, bound, cf, lf)
 
-# ── Phase 1 — twophase 快解模式 (nogil) ───────────────────────
-
 cdef void srch_p1_tp(SState* S, int tw, int fl, int sl,
                      int g, int bound, int lf, int lf2) noexcept nogil:
     cdef int h1,h2,h3,h,m,cf,pc,pe,ps,ph1,ph2,ph,p2b,p2hi,ri,tot
@@ -169,7 +158,6 @@ cdef void srch_p1_tp(SState* S, int tw, int fl, int sl,
     if h3 > h: h = h3
     if g+h > bound: return
     if h==0:
-        # 到达 G1 坐标：小窗口内尝试 phase-2，先产出快解
         pc = perm8(S.scp[g]); pe = perm8(S.sep_[g])
         sa[0]=S.sep_[g][8]-8; sa[1]=S.sep_[g][9]-8
         sa[2]=S.sep_[g][10]-8; sa[3]=S.sep_[g][11]-8
@@ -187,40 +175,21 @@ cdef void srch_p1_tp(SState* S, int tw, int fl, int sl,
                     S.face_of[S.p1_path[g-1]] if g>0 else -1,
                     S.face_of[S.p1_path[g-2]] if g>1 else -1)
             if S.p2_cnt > 0:
-                for ri in range(S.p2_cnt):
-                    if S.sol_cnt >= S.max_sol: return
-                    tot = g + S.p2_lens[ri]
-                    if tot < S.gmin: S.gmin = tot
-                    S.sol_len[S.sol_cnt] = tot
-                    memcpy(&S.sol[S.sol_cnt][0], S.p1_path, g*sizeof(int))
-                    memcpy(&S.sol[S.sol_cnt][g], &S.p2_res[ri][0],
-                           S.p2_lens[ri]*sizeof(int))
-                    S.sol_cnt += 1
+                _emit_p2(S, g, True)
                 found_any = True
                 break
         if not found_any and S.gmin - g + 2 > p2hi:
-            # 快窗口未命中：扩大窗口兜底（极深 phase-2 状态）
             for p2b in range(p2hi, S.gmin - g + 2):
                 S.p2_cnt = 0
                 srch_p2(S, pc, pe, ps, 0, p2b,
                         S.face_of[S.p1_path[g-1]] if g>0 else -1,
                         S.face_of[S.p1_path[g-2]] if g>1 else -1)
                 if S.p2_cnt > 0:
-                    for ri in range(S.p2_cnt):
-                        if S.sol_cnt >= S.max_sol: return
-                        tot = g + S.p2_lens[ri]
-                        if tot < S.gmin: S.gmin = tot
-                        S.sol_len[S.sol_cnt] = tot
-                        memcpy(&S.sol[S.sol_cnt][0], S.p1_path, g*sizeof(int))
-                        memcpy(&S.sol[S.sol_cnt][g], &S.p2_res[ri][0],
-                               S.p2_lens[ri]*sizeof(int))
-                        S.sol_cnt += 1
+                    _emit_p2(S, g, True)
                     found_any = True
                     break
         if found_any:
             return
-        # phase-2 未找到：状态可能在 G1 坐标但不在 G1 群，
-        # 继续 phase-1 深入，寻找群内的坐标归零状态
     for m in range(18):
         cf = S.face_of[m]
         if not can_follow_ok(lf2, lf, cf): continue
@@ -228,8 +197,6 @@ cdef void srch_p1_tp(SState* S, int tw, int fl, int sl,
         srch_p1_tp(S, S.twist_move[tw*18+m], S.flip_move[fl*18+m],
                    S.slice_move[sl*18+m], g+1, bound, cf, lf)
         if S.sol_cnt >= S.max_sol: return
-
-# ── Phase 1 — optimal (nogil) ────────────────────────────────
 
 cdef void srch_p1_opt(SState* S, int tw, int fl, int sl,
                       int g, int bound, int p2tl, int lf, int lf2) noexcept nogil:
@@ -254,14 +221,7 @@ cdef void srch_p1_opt(SState* S, int tw, int fl, int sl,
             srch_p2(S, pc, pe, ps, 0, p2tl,
                     S.face_of[S.p1_path[g-1]] if g>0 else -1,
                     S.face_of[S.p1_path[g-2]] if g>1 else -1)
-            for ri in range(S.p2_cnt):
-                if S.sol_cnt >= S.max_sol: return
-                tot = g + S.p2_lens[ri]
-                S.sol_len[S.sol_cnt] = tot
-                memcpy(&S.sol[S.sol_cnt][0], S.p1_path, g*sizeof(int))
-                memcpy(&S.sol[S.sol_cnt][g], &S.p2_res[ri][0],
-                       S.p2_lens[ri]*sizeof(int))
-                S.sol_cnt += 1
+            _emit_p2(S, g, False)
         return
     for m in range(18):
         cf = S.face_of[m]
@@ -271,15 +231,12 @@ cdef void srch_p1_opt(SState* S, int tw, int fl, int sl,
                     S.slice_move[sl*18+m], g+1, bound, p2tl, cf, lf)
         if S.sol_cnt >= S.max_sol: return
 
-# ── 内部工具：从 SharedTables 初始化一个 SState ──────────────
-
 cdef SState* _new_state(list cp, list co, list ep, list eo):
     """malloc 一个 SState，复制只读表指针 + 初始化 cubie 栈。"""
     cdef SState* S = <SState*>malloc(sizeof(SState))
     if S == NULL:
         raise MemoryError("Failed to allocate SState")
     memset(S, 0, sizeof(SState))
-    # 复制只读共享数据
     S.twist_move  = _shared.twist_move
     S.flip_move   = _shared.flip_move
     S.slice_move  = _shared.slice_move
@@ -295,7 +252,6 @@ cdef SState* _new_state(list cp, list co, list ep, list eo):
     memcpy(S.face_of,    _shared.face_of,    sizeof(_shared.face_of))
     memcpy(S.p2_moves,   _shared.p2_moves,   sizeof(_shared.p2_moves))
     memcpy(S.can_follow, _shared.can_follow, sizeof(_shared.can_follow))
-    # 初始化 cubie 栈底
     cdef int j
     for j in range(8):
         S.scp[0][j] = cp[j]; S.sco[0][j] = co[j]
@@ -304,27 +260,12 @@ cdef SState* _new_state(list cp, list co, list ep, list eo):
     S.sol_cnt = 0
     return S
 
-cdef list _collect(SState* S):
-    """从 SState 中收集解字符串列表。"""
-    cdef int i, k
-    result = []; seen = set()
-    for i in range(S.sol_cnt):
-        parts = []
-        for k in range(S.sol_len[i]):
-            parts.append(MOVES_STR[S.sol[i][k]])
-        s = " ".join(parts)
-        if s not in seen:
-            seen.add(s); result.append(s)
-    return result
-
-# ── Python API（线程安全） ───────────────────────────────────
-
 def load_tables(twist_move_np, flip_move_np, slice_move_np,
                 cp_move_p2_np, ep_move_np, sep_move_np,
                 prun_ts_np, prun_fs_np, prun_tf_np,
                 prun_cp_sep_np, prun_ep_sep_np,
                 list cubie_moves_list):
-    """加载移动表到只读共享模板（只调用一次）。"""
+    """加载移动表到共享模板。"""
     global _np_refs, _tables_loaded
 
     cdef cnp.ndarray tw = np.ascontiguousarray(twist_move_np, dtype=np.intc)
@@ -390,7 +331,7 @@ def load_tables(twist_move_np, flip_move_np, slice_move_np,
 def solve_twophase_gen(int twist, int flip, int slc,
                        list cp, list co, list ep, list eo,
                        int max_depth, object stop_callable=None):
-    """线程安全的 Two-Phase generator（A 版快解模式）。每次调用独立分配搜索状态。"""
+    """Two-Phase generator，线程安全。"""
     if not _tables_loaded:
         raise RuntimeError("Tables not loaded. Call load_tables() first.")
 
@@ -429,7 +370,7 @@ def solve_twophase_gen(int twist, int flip, int slc,
 def solve_optimal_gen(int twist, int flip, int slc,
                       list cp, list co, list ep, list eo,
                       int max_depth, object stop_callable=None):
-    """线程安全的 Optimal generator。每次调用独立分配搜索状态。"""
+    """Optimal generator，线程安全。"""
     if not _tables_loaded:
         raise RuntimeError("Tables not loaded. Call load_tables() first.")
 
@@ -468,15 +409,6 @@ def solve_optimal_gen(int twist, int flip, int slc,
             S.stop_ref = NULL
         free(S)
 
-# �T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T
-# ��ȱ��ȫ��������Cython ���ٰ棩
-# �T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T�T
-
-
-# ── 残缺补全生成器（Cython 快速版，迭代 DFS，线程安全） ──────
-
-
-# ── 残缺补全生成器（Cython 快速版，迭代 DFS，线程安全） ──────
 cdef int CC_CORNER_FACELETS[8][3]
 cdef int CC_EDGE_FACELETS[12][2]
 cdef int CC_STD_CORNERS[8][3]
@@ -621,13 +553,14 @@ cdef inline int _cc_parity12(int* arr) noexcept nogil:
                 inv ^= 1
     return inv
 
-cdef int _cc_corner_dfs(int slot, int used, int* cp, int* co,
-                        int* out_cp, int* out_co, int* count,
-                        int cap, int targets[8][3], bint* stop) noexcept nogil:
-    cdef int i, o, k, ok
+cdef int _cc_corner_dfs(int depth, int used, int* cp, int* co,
+                        int* order, int* out_cp, int* out_co, int* count,
+                        int cap, int targets[8][3], bint* stop,
+                        int* stat) noexcept nogil:
+    cdef int i, o, k, ok, slot
     if stop[0]:
         return 0
-    if slot == 8:
+    if depth == 8:
         if (co[0]+co[1]+co[2]+co[3]+co[4]+co[5]+co[6]+co[7]) % 3 == 0:
             if count[0] >= cap:
                 return 0
@@ -636,7 +569,9 @@ cdef int _cc_corner_dfs(int slot, int used, int* cp, int* co,
                 out_co[count[0]*8 + k] = co[k]
             count[0] += 1
         return 1
+    slot = order[depth]
     for i in range(8):
+        stat[0] += 1
         if used & (1 << i):
             continue
         for o in range(3):
@@ -644,13 +579,15 @@ cdef int _cc_corner_dfs(int slot, int used, int* cp, int* co,
             if ok:
                 cp[slot] = i
                 co[slot] = o
-                if not _cc_corner_dfs(slot + 1, used | (1 << i), cp, co,
-                                      out_cp, out_co, count, cap, targets, stop):
+                if not _cc_corner_dfs(depth + 1, used | (1 << i), cp, co,
+                                      order, out_cp, out_co, count, cap,
+                                      targets, stop, stat):
                     return 0
     return 1
 
-def generate_valid_completes(str pseudo_str, object stop_callable=None):
-    """残缺状态补全生成器（Cython 迭代 DFS，产出 54 字符补全字符串）。"""
+def generate_valid_completes(str pseudo_str, object stop_callable=None,
+                             object stats_list=None):
+    """残缺状态补全生成器（Cython，MRV 最少候选优先）。"""
     _cc_init_tables()
     cdef int targets_c[8][3]
     cdef int targets_e[12][2]
@@ -669,12 +606,15 @@ def generate_valid_completes(str pseudo_str, object stop_callable=None):
     cdef int cand_ep[12][24]
     cdef int cand_eo[12][24]
     cdef int cand_cnt[12]
+    cdef int order_c[8]
+    cdef int cand_c[8]
+    cdef int order_e[12]
     cdef int stack_slot[13]
     cdef int stack_used[13]
     cdef int stack_ci[13]
     cdef int sp = 0
     cdef int used = 0
-    cdef int v, eo_sum, ep_par, ci2, o, ei, ok
+    cdef int v, eo_sum, ep_par, ci2, o, ei, ok, t, depth, stat_c = 0, stat_e = 0
     for i in range(8):
         for j in range(3):
             p = CC_CORNER_FACELETS[i][j]
@@ -705,7 +645,20 @@ def generate_valid_completes(str pseudo_str, object stop_callable=None):
     eo = <int*>malloc(12 * sizeof(int))
     buf = <char*>malloc(54 * sizeof(char))
     try:
-        _cc_corner_dfs(0, 0, cp, co, cp_arr, co_arr, &count, cap, targets_c, &stop)
+        # MRV：角槽候选统计 + 升序排列
+        for i in range(8):
+            cand_c[i] = 0
+            for ci in range(8):
+                for ori in range(3):
+                    if _cc_match_slot(targets_c[i], 3, CC_CORNER_ORI[ci][ori]):
+                        cand_c[i] += 1
+            order_c[i] = i
+        for i in range(8):
+            for j in range(7 - i):
+                if cand_c[order_c[j]] > cand_c[order_c[j + 1]]:
+                    t = order_c[j]; order_c[j] = order_c[j + 1]; order_c[j + 1] = t
+        _cc_corner_dfs(0, 0, cp, co, order_c, cp_arr, co_arr, &count, cap,
+                       targets_c, &stop, &stat_c)
         if count == 0:
             return
         if stop_callable is not None and stop_callable():
@@ -719,6 +672,12 @@ def generate_valid_completes(str pseudo_str, object stop_callable=None):
                         cand_ep[s][cand_cnt[s]] = ci
                         cand_eo[s][cand_cnt[s]] = ori
                         cand_cnt[s] += 1
+            order_e[s] = s
+        # MRV：棱槽按候选数升序排列
+        for i in range(12):
+            for j in range(11 - i):
+                if cand_cnt[order_e[j]] > cand_cnt[order_e[j + 1]]:
+                    t = order_e[j]; order_e[j] = order_e[j + 1]; order_e[j + 1] = t
         stack_slot[0] = 0
         stack_used[0] = 0
         stack_ci[0] = -1
@@ -726,7 +685,8 @@ def generate_valid_completes(str pseudo_str, object stop_callable=None):
         while sp > 0:
             if stop_callable is not None and stop_callable():
                 return
-            s = stack_slot[sp - 1]
+            depth = stack_slot[sp - 1]
+            s = order_e[depth]
             used = stack_used[sp - 1]
             ci = stack_ci[sp - 1] + 1
             if ci >= cand_cnt[s]:
@@ -734,11 +694,12 @@ def generate_valid_completes(str pseudo_str, object stop_callable=None):
                 continue
             stack_ci[sp - 1] = ci
             v = cand_ep[s][ci]
+            stat_e += 1
             if used & (1 << v):
                 continue
             ep[s] = v
             eo[s] = cand_eo[s][ci]
-            if s == 11:
+            if depth == 11:
                 eo_sum = 0
                 for k in range(12):
                     eo_sum += eo[k]
@@ -762,11 +723,13 @@ def generate_valid_completes(str pseudo_str, object stop_callable=None):
                             buf[CC_EDGE_FACELETS[k][j2]] = <char>CC_FACE_ASCII[CC_EDGE_ORI[ei][o][j2]]
                     yield bytes(buf[:54]).decode('ascii')
                 continue
-            stack_slot[sp] = s + 1
+            stack_slot[sp] = depth + 1
             stack_used[sp] = used | (1 << v)
             stack_ci[sp] = -1
             sp += 1
     finally:
+        if stats_list is not None:
+            stats_list.append(stat_c + stat_e)
         free(cp_arr)
         free(cp)
         free(co)
