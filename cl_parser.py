@@ -35,7 +35,7 @@ class AdvancedParser:
     def parse(cls, alg):
         """核心解析方法"""
         alg = alg.replace("’", "'").replace("，", ",").replace("：", ":")
-        alg = re.sub(r'(?<=[URFDLB2\'])(?=[URFDLB])', ' ', alg)
+        alg = re.sub(r"(?<=[URFDLBMES2'])(?=[URFDLBMES])", ' ', alg)
         
         while True:
             # 1. 剥离圆括号 ( ... )

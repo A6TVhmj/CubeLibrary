@@ -21,6 +21,8 @@ def get_base_dir():
 
 CONFIG_PATH = os.path.join(get_base_dir(), "cl_config.json")
 
+DEFAULT_CONFIG = {"lang": "zh", "theme": "bootstrap-light"}
+
 def load_config():
     if os.path.exists(CONFIG_PATH):
         try:
@@ -28,7 +30,7 @@ def load_config():
                 return json.load(f)
         except: 
             pass
-    return {"lang": "en", "theme": "cosmo"}
+    return dict(DEFAULT_CONFIG)
 
 def save_config(config):
     with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
@@ -438,7 +440,7 @@ class CubeLibraryApp(ttk.Window):
     def _check_state_validity(self, state_str=None):
         """返回状态合法性检查消息：残缺可补全 / 完整可解性（朝向和、奇偶、中心格）。"""
         s = state_str if state_str is not None else self._to_state_string()
-        if "?" in s:
+        if "?" in s or s != s.upper():
             try:
                 est, cc = completer.estimate_candidates(s)
                 if cc > completer.MAX_CORNER_COMBO or est > completer.MAX_CANDIDATES:
@@ -466,7 +468,8 @@ class CubeLibraryApp(ttk.Window):
         try:
             state_str = self._to_state_string()
             mode = self.search_mode.get()
-            is_incomplete = "?" in state_str
+            # 小写 = 忽略朝向，与 '?' 一样属于残缺状态，必须走补全通道而非常规求解
+            is_incomplete = "?" in state_str or state_str != state_str.upper()
             is_infinite = self.infinite_mode_var.get()
             
             if is_infinite:
@@ -490,7 +493,12 @@ class CubeLibraryApp(ttk.Window):
 
         if is_incomplete:
             res_q = queue.Queue()
-            worker = threading.Thread(target=completer.solve_incomplete_stream, args=(state_str, res_q, lambda: self.solve_stop_flag, mode, 0), daemon=True)
+            def _inc_worker(state_str=state_str, mode=mode):
+                try:
+                    completer.solve_incomplete_stream(state_str, res_q, lambda: self.solve_stop_flag, mode, 0)
+                except Exception as e:
+                    res_q.put(("ERROR", str(e)))
+            worker = threading.Thread(target=_inc_worker, daemon=True)
             worker.start()
 
             while count < 5:
@@ -524,8 +532,11 @@ class CubeLibraryApp(ttk.Window):
                     out_msg = f"   - ({moves_count}f) {sol if sol else 'Already solved'}\n"
                     self.after(0, lambda m=out_msg: self.log_text.insert(tk.END, m))
                     self.after(0, lambda: self.log_text.see(tk.END))
-            except Exception:
-                pass
+            except Exception as e:
+                if not self.solve_stop_flag:
+                    err_msg = f"\n[Error] {e}\n"
+                    self.after(0, lambda m=err_msg: self.log_text.insert(tk.END, m))
+                    self.after(0, lambda: self.log_text.see(tk.END))
             self.solve_stop_flag = True 
             
         t_end = time.time()
@@ -889,10 +900,18 @@ class ContinuousSearchDialog(ttk.Toplevel):
         self.tree.bind("<Control-c>", self.copy_selected)
         
         if is_incomplete:
-            self.worker = threading.Thread(
-                target=completer.solve_incomplete_stream,
-                args=(self.state_str, self.result_queue, lambda: self.stop_requested, self.search_mode, 0)
-            )
+            def _dlg_worker():
+                try:
+                    completer.solve_incomplete_stream(
+                        self.state_str, self.result_queue, lambda: self.stop_requested, self.search_mode, 0)
+                except Exception as e:
+                    while not self.stop_requested:
+                        try:
+                            self.result_queue.put(("ERROR", str(e)), timeout=0.1)
+                            break
+                        except queue.Full:
+                            continue
+            self.worker = threading.Thread(target=_dlg_worker)
         else:
             self.worker = threading.Thread(target=self._solve_complete_stream)
             

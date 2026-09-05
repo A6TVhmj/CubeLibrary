@@ -165,6 +165,8 @@ def parse_state(s_str):
         f=(s[CORNER_FACELETS[i][0]],s[CORNER_FACELETS[i][1]],s[CORNER_FACELETS[i][2]]); fs=set(f)
         for j in range(8):
             if fs==set(STD_CORNERS[j]): cp[i]=j; break
+        else:
+            raise ValueError(f"无法识别第 {i+1} 号角块的颜色组合 {'/'.join(f)}：请检查涂色；若含 ? 或小写标记请使用残缺补全模式")
         if   f[0] in ('U','D'): co[i]=0
         elif f[1] in ('U','D'): co[i]=1
         else:                    co[i]=2
@@ -172,6 +174,8 @@ def parse_state(s_str):
         f=(s[EDGE_FACELETS[i][0]],s[EDGE_FACELETS[i][1]]); fs=set(f)
         for j in range(12):
             if fs==set(STD_EDGES[j]): ep[i]=j; break
+        else:
+            raise ValueError(f"无法识别第 {i+1} 号棱块的颜色组合 {'/'.join(f)}：请检查涂色；若含 ? 或小写标记请使用残缺补全模式")
         if   f[0] in ('U','D'): eo[i]=0
         elif f[1] in ('U','D'): eo[i]=1
         elif f[0] in ('F','B'): eo[i]=0
@@ -347,6 +351,10 @@ def solve(state_string, mode="twophase", max_depth=22, stop_flag=None):
             s2 = _apply_rotation(state_string, perm)
             if [s2[i] for i in CENTER_INDICES] == ['U', 'R', 'F', 'D', 'L', 'B']:
                 cp2, co2, ep2, eo2 = parse_state(s2)
+                if sum(co2) % 3:
+                    raise ValueError("状态不可解：角块朝向和不一致（存在被单独扭转的角块）")
+                if sum(eo2) % 2:
+                    raise ValueError("状态不可解：棱块朝向和不一致（存在被单独翻转的棱块）")
                 if perm_parity(cp2) == perm_parity(ep2):
                     twist2, flip2, slc2 = get_twist(co2), get_flip(eo2), get_slice(ep2)
                     inv_map = {v: k for k, v in face_map.items()}
@@ -367,6 +375,10 @@ def solve(state_string, mode="twophase", max_depth=22, stop_flag=None):
                                 yield remapped
                     return
         raise ValueError("状态不可解：中心块颜色错位（可能包含中层转动 M/E/S，当前求解器仅支持标准六面转动）")
+    if sum(co) % 3:
+        raise ValueError("状态不可解：角块朝向和不一致（存在被单独扭转的角块）")
+    if sum(eo) % 2:
+        raise ValueError("状态不可解：棱块朝向和不一致（存在被单独翻转的棱块）")
     if perm_parity(cp) != perm_parity(ep):
         raise ValueError("状态不可解：角块与棱块的置换奇偶性不匹配（可能包含中层转动 M/E/S，当前求解器仅支持标准六面转动）")
     if _HAS_CYTHON:
